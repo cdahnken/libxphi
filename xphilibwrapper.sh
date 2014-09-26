@@ -1,4 +1,9 @@
-#XPHIZGEMMPATH=/home/chris/PDOXGEMM/20140224-alternative-tripple
-XPHIZGEMMPATH=`dirname $0`
+#!/bin/bash
+
+XPHIZGEMMPATH=$(cd $(dirname $0); pwd -P)
+
+
 export LD_LIBRARY_PATH=$XPHIZGEMMPATH:$LD_LIBRARY_PATH
-LD_PRELOAD="$XPHIZGEMMPATH/libxphi.so" $*
+export LD_PRELOAD=$XPHIZGEMMPATH/libxphi.so
+$*
+
