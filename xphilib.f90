@@ -83,7 +83,7 @@ module xphilibmod
   logical :: offload_verbose
   real(kind=kind(0.0D0)) :: offload_threshold
   
-  public :: xphizgemm,xphidgemm,xphisgemm, xphigemm_allocate, xphigemm_deallocate, xphizhegvx, xphizgemv,xphidgemv
+  public :: xphizgemm,xphidgemm,xphisgemm, xphigemm_allocate, xphigemm_deallocate !, xphizhegvx, xphizgemv,xphidgemv
 
 contains
   ! -- this function is just included since the inclusion 

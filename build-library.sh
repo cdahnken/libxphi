@@ -10,4 +10,4 @@ ifort $COMMOMOPTIONS   -c xphilib_proxy.f90
 icc -shared -fPIC   mkl_proxy.c  -o libmkl_proxy.so -mkl=parallel
 ifort  -shared  $COMMOMOPTIONS   xphilib.o xphilib_proxy.o -L. -lmkl_proxy -o libxphi.so
 
-ifort $COMMOMOPTIONS  main-dynamic.f90 -L. -lmkl_proxy -mkl=parallel -o main-dynamic.x
+#ifort $COMMOMOPTIONS  main-dynamic.f90 -L. -lmkl_proxy -mkl=parallel -o main-dynamic.x
