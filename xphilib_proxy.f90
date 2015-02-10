@@ -57,19 +57,6 @@ subroutine dgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc
   call xphidgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
 end subroutine dgemm
 
-subroutine sgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
-  use xphilibmod
-  implicit none
-
-  character :: transa,transb
-  integer :: lda,ldb,ldc,ms,ks,ns
-  real(kind=kind(0.0E0)), dimension(lda,*) :: a
-  real(kind=kind(0.0E0)), dimension(ldb,*) :: b
-  real(kind=kind(0.0E0)), dimension(ldc,*) :: c
-  real(kind=kind(0.0E0)) :: alpha, beta
-  
-  call xphisgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
-end subroutine sgemm
 
 
 

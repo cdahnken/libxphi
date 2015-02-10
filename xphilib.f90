@@ -74,6 +74,8 @@ module xphilibmod
   integer :: signalcbuff2=106
   integer :: signalcbuff3=107
   logical :: isallocated=.false.
+  integer :: computesignal=108
+
 
   integer :: blocksize_m
   integer :: blocksize_n
@@ -83,7 +85,7 @@ module xphilibmod
   logical :: offload_verbose
   real(kind=kind(0.0D0)) :: offload_threshold
   
-  public :: xphizgemm,xphidgemm,xphisgemm, xphigemm_allocate, xphigemm_deallocate !, xphizhegvx, xphizgemv,xphidgemv
+  public :: xphizgemm,xphidgemm,xphigemm_allocate, xphigemm_deallocate !, xphisgemm, xphizhegvx, xphizgemv,xphidgemv
 
 contains
   ! -- this function is just included since the inclusion 
@@ -349,32 +351,32 @@ contains
   end subroutine xphigemm_deallocate
 
 
-  subroutine xphisgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+  subroutine xphidgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
     use ifport, only : dclock
     use iso_c_binding
     implicit none
 #ifdef _BUILD_LIBRARY_
-    !dir$ attributes offload:mic                :: MKL_SGEMM
+    !dir$ attributes offload:mic                :: MKL_DGEMM
 #else
-    !dir$ attributes offload:mic                :: SGEMM
+    !dir$ attributes offload:mic                :: DGEMM
 #endif
     character :: transa,transb
     integer :: lda,ldb,ldc,ms,ks,ns,bm,bn,bk
-    real(kind=kind(0.0E0)), dimension(lda,*) :: a
-    real(kind=kind(0.0E0)), dimension(ldb,*) :: b
-    real(kind=kind(0.0E0)), dimension(ldc,*) :: c
-    real(kind=kind(0.0E0)) :: alpha, beta
-    real(kind=kind(0.0E0)), dimension(:), pointer :: aptrcur_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: aptrnxt_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: bptrcur_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: bptrnxt_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: cptrcur_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: cptrnxt_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: cptrprv_d
-    real(kind=kind(0.0E0)), dimension(:), pointer :: ptrtmp_d
-
+    real(kind=kind(0.0D0)), dimension(lda,*) :: a
+    real(kind=kind(0.0D0)), dimension(ldb,*) :: b
+    real(kind=kind(0.0D0)), dimension(ldc,*) :: c
+    real(kind=kind(0.0D0)) :: alpha, beta
+    real(kind=kind(0.0D0)), dimension(:), pointer :: aptrcur_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: aptrnxt_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: bptrcur_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: bptrnxt_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: cptrcur_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: cptrnxt_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: cptrprv_d
+    real(kind=kind(0.0D0)), dimension(:), pointer :: ptrtmp_d
 
     !dir$ attributes offload:mic :: cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, cur_index_m, cur_index_n, cur_index_k, nxt_buffsize_k, nxt_index_k
+
     integer :: i,j,k,l
     integer :: nxti,nxtj,nxtk
     integer :: prvi,prvj,prvk
@@ -400,8 +402,8 @@ contains
     integer :: nxt_index_m
     integer :: nxt_index_n
     integer :: nxt_index_k
-    real(kind=kind(0.0E0)) :: ONE=1.0E0
-    real(kind=kind(0.0E0)) :: ZERO=0.0E0
+    real(kind=kind(0.0D0)) :: ONE=dble(1.0D0)
+    real(kind=kind(0.0D0)) :: ZERO=dble(0.0D0)
     integer, dimension(:), allocatable :: m_of_i 
     integer, dimension(:), allocatable :: n_of_i 
     integer, dimension(:), allocatable :: k_of_i 
@@ -412,6 +414,7 @@ contains
     double precision :: trecv
     double precision :: talloc
     double precision :: tdeall
+    logical :: catchcomputesignal=.false.
 
     IF ((ms.EQ.0) .OR. (ns.EQ.0) .OR.(ks.EQ.0)) RETURN
     
@@ -426,9 +429,9 @@ contains
     if((dble(2)*dble(ms)*dble(ns)*dble(ks)).lt.(offload_threshold)) then
 !       write(*,*) "about to call mkl_zgemm on host"
 #ifdef _BUILD_LIBRARY_
-       call mkl_sgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+       call mkl_dgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
 #else
-       call sgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+       call dgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
 #endif
     else
        ! -- if the total number of FLOPs in the matrix is bigger than the threshold
@@ -474,9 +477,7 @@ contains
        call c_f_pointer(c_loc(cbuff3),cptrprv_d,[blocksize_m*blocksize_n])
        
 
-       !$OMP PARALLEL NUM_THREADS(2)
        do iblock=0,nblocks+1
-          !$OMP SINGLE
           if( (iblock.eq.1).or.(iblock.eq.(nblocks+1)).or.(m_of_i(iblock).ne.m_of_i(iblock-1)).or.(n_of_i(iblock).ne.n_of_i(iblock-1)) ) then
              ptrtmp_d=>cptrnxt_d
              cptrnxt_d=>cptrprv_d
@@ -491,56 +492,7 @@ contains
           ptrtmp_d=>bptrnxt_d
           bptrnxt_d=>bptrcur_d
           bptrcur_d=>ptrtmp_d
-          !$OMP END SINGLE
-          !$OMP SECTIONS 
-          ! --------------- section 1: SEND ------------------
-          !$OMP SECTION
-          !   tsend=dclock()
-          if(iblock.lt.(nblocks)) then
-             nxti=m_of_i(iblock+1) 
-             nxtj=n_of_i(iblock+1) 
-             nxtk=k_of_i(iblock+1) 
 
-             nxt_buffsize_m=buffersize(ms,bm,nxti)
-             nxt_index_m=(nxti-1)*bm+1
-             
-             nxt_buffsize_n=buffersize(ns,bn,nxtj)
-             nxt_index_n=(nxtj-1)*bn+1
-             
-             nxt_buffsize_k=buffersize(ks,bk,nxtk)
-             nxt_index_k=(nxtk-1)*bk+1
-             
-             call shapelinear_s(transa,aptrnxt_d,a,nxt_index_m,nxt_index_m+nxt_buffsize_m-1,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_buffsize_m,nxt_buffsize_k,lda)
-             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(aptrnxt_d:length(nxt_buffsize_m*nxt_buffsize_k) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalabuff1)
-             call shapelinear_s(transb,bptrnxt_d,b,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_index_n,nxt_index_n+nxt_buffsize_n-1,nxt_buffsize_k,nxt_buffsize_n,ldb)
-             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(bptrnxt_d:length(nxt_buffsize_k*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalbbuff1)
-             if(mod(iblock,nkb).eq.0) then
-                cptrnxt_d(1:nxt_buffsize_m*nxt_buffsize_n)=reshape(c(nxt_index_m:nxt_index_m+nxt_buffsize_m-1,nxt_index_n:nxt_index_n+nxt_buffsize_n-1),(/nxt_buffsize_m*nxt_buffsize_n/))
-                cptrnxt_d=beta*cptrnxt_d
-                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(cptrnxt_d:length(nxt_buffsize_m*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
-             end if
-             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalabuff1) 
-             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalbbuff1)
-          end if
-          if(iblock.gt.1) then
-             if(mod(iblock-1,nkb).eq.0) then
-                prvi=m_of_i(iblock-1) 
-                prvj=n_of_i(iblock-1) 
-                
-                prv_buffsize_m=buffersize(ms,bm,prvi)
-                prv_index_m=(prvi-1)*bm+1
-                
-                prv_buffsize_n=buffersize(ns,bn,prvj)
-                prv_index_n=(prvj-1)*bn+1
-                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) OUT(cptrprv_d:length(prv_buffsize_m*prv_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
-                c(prv_index_m:prv_index_m+prv_buffsize_m-1,prv_index_n:prv_index_n+prv_buffsize_n-1)=reshape(cptrprv_d(1:prv_buffsize_m*prv_buffsize_n),(/prv_buffsize_m,prv_buffsize_n/))
-             end if
-          end if
-!          tsend=dclock() -tsend
-!          write(*,*) "tsend ",iblock,tsend
-          ! --------------- section 2: compute ------------------
-          !$OMP SECTION 
-!          tcomp=dclock()
           if((iblock.ge.1).and.(iblock.le.nblocks)) then
              i=m_of_i(iblock) 
              j=n_of_i(iblock) 
@@ -559,52 +511,96 @@ contains
                 !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
                 !DIR$ & IN(aptrcur_d:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) &
                 !DIR$ & IN(bptrcur_d:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) &
-                !DIR$ & IN(cptrcur_d:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,ONE,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha)
+                !DIR$ & IN(cptrcur_d:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,ONE,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha) signal(computesignal)
 #ifdef _BUILD_LIBRARY_
-                call mkl_sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
+                call mkl_dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
 #else
-                call sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
+                call dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
 #endif
+                catchcomputesignal=.true.
              else if((.not.lsame(transa,'n')).and.lsame(transb,'n')) then 
                 !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
                 !DIR$ & IN(aptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
                 !DIR$ & IN(bptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
-                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta)
+                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
 #ifdef _BUILD_LIBRARY_
-                call mkl_sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
+                call mkl_dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
 #else
-                call sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
+                call dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_k, ONE, cptrcur_d, cur_buffsize_m)
 #endif
              else if(lsame(transa,'n').and.(.not.lsame(transb,'n'))) then 
                 !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
                 !DIR$ & IN(aptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
                 !DIR$ & IN(bptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
-                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta)
+                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
 #ifdef _BUILD_LIBRARY_
-                call mkl_sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
+                call mkl_dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
 #else
-                call sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
+                call dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_m, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
 #endif
+                catchcomputesignal=.true.
              else if((.not.lsame(transa,'n')).and.(.not.lsame(transb,'n'))) then 
                 !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
                 !DIR$ & IN(aptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
                 !DIR$ & IN(bptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
-                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta)
+                !DIR$ & IN(cptrcur_d:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
 #ifdef _BUILD_LIBRARY_
-                call mkl_sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
+                call mkl_dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
 #else
-                call sgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
+                call dgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur_d, cur_buffsize_k, bptrcur_d, cur_buffsize_n, ONE, cptrcur_d, cur_buffsize_m)
 #endif
+                catchcomputesignal=.true.
              else
                 write(*,*) "don't know what to do"
                 stop
              end if
           end if
-!          tcomp=dclock()-tcomp
-!          write(*,*) "tcomp ",iblock, tcomp
-          !$OMP END SECTIONS 
+
+          if(iblock.lt.(nblocks)) then
+             nxti=m_of_i(iblock+1) 
+             nxtj=n_of_i(iblock+1) 
+             nxtk=k_of_i(iblock+1) 
+
+             nxt_buffsize_m=buffersize(ms,bm,nxti)
+             nxt_index_m=(nxti-1)*bm+1
+             
+             nxt_buffsize_n=buffersize(ns,bn,nxtj)
+             nxt_index_n=(nxtj-1)*bn+1
+             
+             nxt_buffsize_k=buffersize(ks,bk,nxtk)
+             nxt_index_k=(nxtk-1)*bk+1
+             
+             call shapelinear_d(transa,aptrnxt_d,a,nxt_index_m,nxt_index_m+nxt_buffsize_m-1,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_buffsize_m,nxt_buffsize_k,lda)
+             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(aptrnxt_d:length(nxt_buffsize_m*nxt_buffsize_k) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalabuff1)
+             call shapelinear_d(transb,bptrnxt_d,b,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_index_n,nxt_index_n+nxt_buffsize_n-1,nxt_buffsize_k,nxt_buffsize_n,ldb)
+             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(bptrnxt_d:length(nxt_buffsize_k*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalbbuff2)
+             if(mod(iblock,nkb).eq.0) then
+                cptrnxt_d(1:nxt_buffsize_m*nxt_buffsize_n)=reshape(c(nxt_index_m:nxt_index_m+nxt_buffsize_m-1,nxt_index_n:nxt_index_n+nxt_buffsize_n-1),(/nxt_buffsize_m*nxt_buffsize_n/))
+                cptrnxt_d=beta*cptrnxt_d
+                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(cptrnxt_d:length(nxt_buffsize_m*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
+             end if
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalabuff1) 
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalbbuff2)
+          end if
+          if(iblock.gt.1) then
+             if(mod(iblock-1,nkb).eq.0) then
+                prvi=m_of_i(iblock-1) 
+                prvj=n_of_i(iblock-1) 
+                
+                prv_buffsize_m=buffersize(ms,bm,prvi)
+                prv_index_m=(prvi-1)*bm+1
+                
+                prv_buffsize_n=buffersize(ns,bn,prvj)
+                prv_index_n=(prvj-1)*bn+1
+                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) OUT(cptrprv_d:length(prv_buffsize_m*prv_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
+                c(prv_index_m:prv_index_m+prv_buffsize_m-1,prv_index_n:prv_index_n+prv_buffsize_n-1)=reshape(cptrprv_d(1:prv_buffsize_m*prv_buffsize_n),(/prv_buffsize_m,prv_buffsize_n/))
+             end if
+          end if
+          if(catchcomputesignal) then
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(computesignal)
+                catchcomputesignal=.false.
+          end if
        end do
-       !$OMP END PARALLEL
 
        ! -- deallocate the index data
        deallocate(m_of_i)
@@ -612,13 +608,274 @@ contains
        deallocate(k_of_i)
     end if
     if(offload_verbose) then
-       write(*,*) "xphisgemm ",ms,ns,ks,dble(2)*dble(ms)*dble(ns)*dble(ks)/(dclock()-t1)/dble(1000)/dble(1000)/dble(1000),"GFLP"
+       write(*,*) "xphidgemm ",ms,ns,ks,dble(2)*dble(ms)*dble(ns)*dble(ks)/(dclock()-t1)/dble(1000)/dble(1000)/dble(1000),"GFLP"
     endif
-  end subroutine xphisgemm
+  end subroutine xphidgemm
 
 
 
-  subroutine xphidgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+  subroutine xphizgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+    use ifport, only : dclock
+    implicit none
+#ifdef _BUILD_LIBRARY_
+    !dir$ attributes offload:mic                :: MKL_ZGEMM
+#else
+    !dir$ attributes offload:mic                :: ZGEMM
+#endif
+    character :: transa,transb
+    integer :: lda,ldb,ldc,ms,ks,ns,bm,bn,bk
+    complex(kind=kind(0.0D0)), dimension(lda,*) :: a
+    complex(kind=kind(0.0D0)), dimension(ldb,*) :: b
+    complex(kind=kind(0.0D0)), dimension(ldc,*) :: c
+    complex(kind=kind(0.0D0)) :: alpha, beta
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: aptrcur
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: aptrnxt
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: bptrcur
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: bptrnxt
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: cptrcur
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: cptrnxt
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: cptrprv
+    complex(kind=kind(0.0D0)), dimension(:), pointer :: ptrtmp
+
+
+    !dir$ attributes offload:mic :: cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, cur_index_m, cur_index_n, cur_index_k, nxt_buffsize_k, nxt_index_k
+    integer :: i,j,k,l
+    integer :: nxti,nxtj,nxtk
+    integer :: prvi,prvj,prvk
+
+    integer :: nkb,nmb,nnb
+    integer :: nblocks
+    integer :: iblock
+    integer :: cur_buffsize_m
+    integer :: cur_buffsize_n
+    integer :: cur_buffsize_k
+    integer :: prv_buffsize_m
+    integer :: prv_buffsize_n
+    integer :: prv_buffsize_k
+    integer :: nxt_buffsize_m
+    integer :: nxt_buffsize_n
+    integer :: nxt_buffsize_k
+    integer :: cur_index_m
+    integer :: cur_index_n
+    integer :: cur_index_k
+    integer :: prv_index_m
+    integer :: prv_index_n
+    integer :: prv_index_k
+    integer :: nxt_index_m
+    integer :: nxt_index_n
+    integer :: nxt_index_k
+    complex(kind=kind(0.0D0)) :: ONE=cmplx(1.0D0,0.0D0)
+    complex(kind=kind(0.0D0)) :: ZERO=cmplx(0.0D0,0.0D0)
+    integer, dimension(:), allocatable :: m_of_i 
+    integer, dimension(:), allocatable :: n_of_i 
+    integer, dimension(:), allocatable :: k_of_i 
+    integer :: count
+    double precision :: t1
+    double precision :: tsend
+    double precision :: tcomp
+    double precision :: trecv
+    double precision :: talloc
+    double precision :: tdeall
+    logical :: catchcomputesignal=.false.
+
+    
+    if(.not.isallocated) then
+       call xphigemm_allocate(1000,1000,1000)
+       isallocated=.true.
+    end if
+
+    t1=dclock()
+    ! -- check if the matrix computation is actually less than the 
+    ! -- threshold performance. In this case, just do it on the host.
+    if((dble(8)*dble(ms)*dble(ns)*dble(ks)).lt.(offload_threshold)) then
+!       write(*,*) "about to call mkl_zgemm on host"
+#ifdef _BUILD_LIBRARY_
+       call mkl_zgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+#else
+       call zgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+#endif
+!       call mkl_blas_zgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+    else
+       ! -- if the total number of FLOPs in the matrix is bigger than the threshold
+       ! -- throw the matrix into the blocking algorithm.
+       bm=blocksize_m
+       bn=blocksize_n
+       bk=blocksize_k
+
+       ! -- compute the total number of blocks that must run though
+       nmb=numblocks(ms,bm)
+       nnb=numblocks(ns,bn)
+       nkb=numblocks(ks,bk)
+       nblocks=nmb*nnb*nkb
+
+
+       !       talloc=dclock()
+       allocate(m_of_i(nblocks))
+       allocate(n_of_i(nblocks))
+       allocate(k_of_i(nblocks))
+
+       count=0
+       do i=1,nmb
+          do j=1,nnb
+             do l=1,nkb
+                count=count+1
+                m_of_i(count)=i
+                n_of_i(count)=j
+                k_of_i(count)=l
+             end do
+          end do
+       end do
+
+
+       cptrnxt=>cbuff1
+       cptrcur=>cbuff2
+       cptrprv=>cbuff3
+
+       aptrnxt=>abuff1
+       aptrcur=>abuff2
+
+       bptrnxt=>bbuff1
+       bptrcur=>bbuff2
+
+
+       do iblock=0,nblocks+1
+          if( (iblock.eq.1).or.(iblock.eq.(nblocks+1)).or.(m_of_i(iblock).ne.m_of_i(iblock-1)).or.(n_of_i(iblock).ne.n_of_i(iblock-1)) ) then
+             ptrtmp=>cptrnxt
+             cptrnxt=>cptrprv
+             cptrprv=>cptrcur
+             cptrcur=>ptrtmp
+          end if
+          
+          ptrtmp=>aptrnxt
+          aptrnxt=>aptrcur
+          aptrcur=>ptrtmp
+          
+          ptrtmp=>bptrnxt
+          bptrnxt=>bptrcur
+          bptrcur=>ptrtmp
+
+          if((iblock.ge.1).and.(iblock.le.nblocks)) then
+             i=m_of_i(iblock) 
+             j=n_of_i(iblock) 
+             k=k_of_i(iblock) 
+             
+             cur_buffsize_m=buffersize(ms,bm,i)
+             cur_index_m=(i-1)*bm+1
+             
+             cur_buffsize_n=buffersize(ns,bn,j)
+             cur_index_n=(j-1)*bn+1
+             
+             cur_buffsize_k=buffersize(ks,bk,k)
+             cur_index_k=(k-1)*bk+1
+
+             if(lsame(transa,'n').and.lsame(transb,'n')) then 
+                !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
+                !DIR$ & IN(aptrcur:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(bptrcur:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(cptrcur:length(0) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,ONE,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha) signal(computesignal)
+#ifdef _BUILD_LIBRARY_
+                call mkl_zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_m, bptrcur, cur_buffsize_k, ONE, cptrcur, cur_buffsize_m)
+#else
+                call zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_m, bptrcur, cur_buffsize_k, ONE, cptrcur, cur_buffsize_m)
+#endif
+                catchcomputesignal=.true.
+             else if((.not.lsame(transa,'n')).and.lsame(transb,'n')) then 
+                !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
+                !DIR$ & IN(aptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(bptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(cptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
+#ifdef _BUILD_LIBRARY_
+                call mkl_zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_k, bptrcur, cur_buffsize_k, ONE, cptrcur, cur_buffsize_m)
+#else
+                call zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_k, bptrcur, cur_buffsize_k, ONE, cptrcur, cur_buffsize_m)
+#endif
+                catchcomputesignal=.true.
+             else if(lsame(transa,'n').and.(.not.lsame(transb,'n'))) then 
+                !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
+                !DIR$ & IN(aptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(bptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(cptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
+#ifdef _BUILD_LIBRARY_
+                call mkl_zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_m, bptrcur, cur_buffsize_n, ONE, cptrcur, cur_buffsize_m)
+#else
+                call zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_m, bptrcur, cur_buffsize_n, ONE, cptrcur, cur_buffsize_m)
+#endif
+                catchcomputesignal=.true.
+             else if((.not.lsame(transa,'n')).and.(.not.lsame(transb,'n'))) then 
+                !DIR$ OFFLOAD TARGET(MIC:offload_device) & 
+                !DIR$ & IN(aptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(bptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) &
+                !DIR$ & IN(cptrcur:length(0) ALLOC_IF(.false.) FREE_IF(.false.)) IN(transa,transb,cur_buffsize_m,cur_buffsize_n,cur_buffsize_k,alpha,beta) signal(computesignal)
+#ifdef _BUILD_LIBRARY_
+                call mkl_zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_k, bptrcur, cur_buffsize_n, ONE, cptrcur, cur_buffsize_m)
+#else
+                call zgemm(transa, transb, cur_buffsize_m, cur_buffsize_n, cur_buffsize_k, alpha, aptrcur, cur_buffsize_k, bptrcur, cur_buffsize_n, ONE, cptrcur, cur_buffsize_m)
+#endif
+                catchcomputesignal=.true.
+             else
+                write(*,*) "don't know what to do"
+                stop
+             end if
+          end if
+
+          ! --------------- section 1: SEND ------------------
+          if(iblock.lt.(nblocks)) then
+             nxti=m_of_i(iblock+1) 
+             nxtj=n_of_i(iblock+1) 
+             nxtk=k_of_i(iblock+1) 
+
+             nxt_buffsize_m=buffersize(ms,bm,nxti)
+             nxt_index_m=(nxti-1)*bm+1
+             
+             nxt_buffsize_n=buffersize(ns,bn,nxtj)
+             nxt_index_n=(nxtj-1)*bn+1
+             
+             nxt_buffsize_k=buffersize(ks,bk,nxtk)
+             nxt_index_k=(nxtk-1)*bk+1
+             
+             call shapelinear(transa,aptrnxt,a,nxt_index_m,nxt_index_m+nxt_buffsize_m-1,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_buffsize_m,nxt_buffsize_k,lda)
+             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(aptrnxt:length(nxt_buffsize_m*nxt_buffsize_k) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalabuff1)
+             call shapelinear(transb,bptrnxt,b,nxt_index_k,nxt_index_k+nxt_buffsize_k-1,nxt_index_n,nxt_index_n+nxt_buffsize_n-1,nxt_buffsize_k,nxt_buffsize_n,ldb)
+             !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(bptrnxt:length(nxt_buffsize_k*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) signal(signalbbuff2)
+             if(mod(iblock,nkb).eq.0) then
+                cptrnxt(1:nxt_buffsize_m*nxt_buffsize_n)=reshape(c(nxt_index_m:nxt_index_m+nxt_buffsize_m-1,nxt_index_n:nxt_index_n+nxt_buffsize_n-1),(/nxt_buffsize_m*nxt_buffsize_n/))
+                cptrnxt=beta*cptrnxt
+                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) IN(cptrnxt:length(nxt_buffsize_m*nxt_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
+             end if
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalabuff1) 
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(signalbbuff2)
+          end if
+          if(iblock.gt.1) then
+             if(mod(iblock-1,nkb).eq.0) then
+                prvi=m_of_i(iblock-1) 
+                prvj=n_of_i(iblock-1) 
+                
+                prv_buffsize_m=buffersize(ms,bm,prvi)
+                prv_index_m=(prvi-1)*bm+1
+                
+                prv_buffsize_n=buffersize(ns,bn,prvj)
+                prv_index_n=(prvj-1)*bn+1
+                !DIR$ OFFLOAD_TRANSFER TARGET(MIC:offload_device) OUT(cptrprv:length(prv_buffsize_m*prv_buffsize_n) ALIGN(64) ALLOC_IF(.false.) FREE_IF(.false.)) 
+                c(prv_index_m:prv_index_m+prv_buffsize_m-1,prv_index_n:prv_index_n+prv_buffsize_n-1)=reshape(cptrprv(1:prv_buffsize_m*prv_buffsize_n),(/prv_buffsize_m,prv_buffsize_n/))
+             end if
+          end if
+          ! --------------- section 2: compute ------------------
+          if(catchcomputesignal) then
+             !DIR$ OFFLOAD_WAIT TARGET(MIC:offload_device) wait(computesignal)
+                catchcomputesignal=.false.
+          end if
+       end do
+       deallocate(m_of_i)
+       deallocate(n_of_i)
+       deallocate(k_of_i)
+
+    end if
+    if(offload_verbose) then
+       write(*,*) "xphizgemm ",ms,ns,ks,dble(8)*dble(ms)*dble(ns)*dble(ks)/(dclock()-t1)/dble(1000)/dble(1000)/dble(1000),"GFLP"
+    end if
+  end subroutine xphizgemm
+
+  subroutine xphidgemm_omp(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
     use ifport, only : dclock
     use iso_c_binding
     implicit none
@@ -884,11 +1141,11 @@ contains
     if(offload_verbose) then
        write(*,*) "xphidgemm ",ms,ns,ks,dble(2)*dble(ms)*dble(ns)*dble(ks)/(dclock()-t1)/dble(1000)/dble(1000)/dble(1000),"GFLP"
     endif
-  end subroutine xphidgemm
+  end subroutine xphidgemm_omp
 
 
 
-  subroutine xphizgemm(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
+  subroutine xphizgemm_omp(transa, transb, ms, ns, ks, alpha, a, lda, b, ldb, beta, c, ldc)
     use ifport, only : dclock
     implicit none
 #ifdef _BUILD_LIBRARY_
@@ -1146,6 +1403,6 @@ contains
     if(offload_verbose) then
        write(*,*) "xphizgemm ",ms,ns,ks,dble(8)*dble(ms)*dble(ns)*dble(ks)/(dclock()-t1)/dble(1000)/dble(1000)/dble(1000),"GFLP"
     end if
-  end subroutine xphizgemm
+  end subroutine xphizgemm_omp
 end module xphilibmod
 
